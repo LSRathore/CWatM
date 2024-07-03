@@ -20,7 +20,7 @@ class lakes_reservoirs(object):
 
     Note:
 
-        Calculate water retention in lakes and reservoirs 
+        Calculate water retention in lakes and reservoirs
 
         Using the **Modified Puls approach** to calculate retention of a lake
         See also: LISFLOOD manual Annex 3 (Burek et al. 2013)
@@ -50,7 +50,7 @@ class lakes_reservoirs(object):
 
         c: for a perfect weir with mu=0.577 and Poleni: :math:`{2 \\over{3}} \\mu * \\sqrt{2*g} = 1.7`
 
-        c: for a parabolic weir: around 1.8 
+        c: for a parabolic weir: around 1.8
 
         because it is a imperfect weir: :math:`C = c * 0.85 = 1.5`
 
@@ -127,8 +127,7 @@ class lakes_reservoirs(object):
     lakeOutflow                                                                                                    --   
     reservoirStorage                                                                                               --   
     MtoM3C                                 conversion factor from m to m3 (compressed map)                         --   
-    EvapWaterBodyMOutlet                   Evaporation from lakes and reservoirs summed up at outlet               m
-    EvapWaterBodyM                         Evaporation from lakes and reservoirs                                   m
+    EvapWaterBodyM                         Evaporation from lakes and reservoirs                                   m    
     lakeResInflowM                                                                                                 --   
     lakeResOutflowM                                                                                                --   
     lakedaycorrect                                                                                                 --   
@@ -143,8 +142,8 @@ class lakes_reservoirs(object):
     adjust_Normal_FloodC                                                                                           --   
     norm_floodLimitC                                                                                               --   
     minQC                                                                                                          --   
-    normQC                                                                                                         m3/s
-    nondmgQC                                                                                                       m3/s
+    normQC                                                                                                         --   
+    nondmgQC                                                                                                       --   
     deltaO                                                                                                         --   
     deltaLN                                                                                                        --   
     deltaLF                                                                                                        --   
@@ -426,7 +425,7 @@ class lakes_reservoirs(object):
             self.var.MtoM3C = np.compress(self.var.compress_LR, self.var.MtoM3)
 
             # init water balance [m]
-            self.var.EvapWaterBodyMOutlet = globals.inZero.copy()
+            self.var.EvapWaterBodyM = globals.inZero.copy()
             self.var.lakeResInflowM = globals.inZero.copy()
             self.var.lakeResOutflowM = globals.inZero.copy()
 
@@ -796,10 +795,8 @@ class lakes_reservoirs(object):
                         (self.var.reservoirFillC - self.var.norm_floodLimitC) / self.var.deltaNFL) * (
                                             self.var.nondmgQC - self.var.normQC)
             # Reservoir outflow [m3/s] if FloodStorageLimit le ReservoirFill gt NormalStorageLimit
-            inflowCQ = inflowC * self.var.InvDtSec * self.var.noRoutingSteps
 
-            temp = np.minimum(self.var.nondmgQC,
-                              np.maximum(inflowCQ, self.var.normQC))
+            temp = np.minimum(self.var.nondmgQC, np.maximum(inflowC * 1.2, self.var.normQC))
             reservoirOutflow4 = np.maximum(
                 (self.var.reservoirFillC - self.var.floodLimitC - 0.01) * self.var.resVolumeC * self.var.InvDtSec, temp)
 
@@ -818,9 +815,9 @@ class lakes_reservoirs(object):
             reservoirOutflow = np.where(self.var.reservoirFillC > self.var.floodLimitC, reservoirOutflow4,
                                         reservoirOutflow)
 
-            temp = np.minimum(reservoirOutflow, np.maximum(inflowCQ, self.var.normQC))
+            temp = np.minimum(reservoirOutflow, np.maximum(inflowC, self.var.normQC))
 
-            reservoirOutflow = np.where((reservoirOutflow > 1.2 * inflowCQ) &
+            reservoirOutflow = np.where((reservoirOutflow > 1.2 * inflowC) &
                                         (reservoirOutflow > self.var.normQC) &
                                         (self.var.reservoirFillC < self.var.floodLimitC), temp, reservoirOutflow)
 
@@ -841,10 +838,21 @@ class lakes_reservoirs(object):
                                             np.where(self.var.lakeResStorage_release_ratioC > -1,
                                             self.var.lakeResStorage_release_ratioC * self.var.reservoirStorageM3C *
                                             (1 / (60 * 60 * 24)), reservoirOutflow))
-
+                                            
+            # val_file_path = 'E:/CWatM-main/output/default/red_112265_outflow.txt'                                
+            # with open(val_file_path, 'a') as val_res_out:
+                # temp_reservoirOutflow = reservoirOutflow[np.where(self.var.waterBodyOutC==112265)]
+                # temp_inflow = inflowC[np.where(self.var.waterBodyOutC==112265)]/86400    #originally inflowC is in m3, 
+                # temp_storage = self.var.reservoirStorageM3C[np.where(self.var.waterBodyOutC==112265)]/1000000   #convert to MCM
+                # temp_day_of_year = dateVar['currDate'].timetuple().tm_yday
+                # print("resID 112265:", temp_inflow, temp_storage, temp_day_of_year, temp_reservoirOutflow)
+                # val_res_out.write(f'{temp_inflow}, {temp_storage},{temp_day_of_year}, {temp_reservoirOutflow}\n')
+                
             # Apply reservoirOutflowLimitMask to limit resOutflows based on storagre relative to threshold volume
+            
             # This may override the reservoir_releases behaviour - ATTENTION FROM MIKHAIL/DOR
             reservoirOutflow = reservoirOutflow * reservoirOutflowLimitMask
+            
 
             qResOutM3DtC = reservoirOutflow * self.var.dtRouting
 
@@ -879,7 +887,120 @@ class lakes_reservoirs(object):
                     "res1", False)
 
             return qResOutM3DtC
+            
+            ##############################################
+            # RANDOM FOREST INTEGRATION
+            #############################################
+        def dynamic_inloop_reservoirs_rf(inflowC, NoRoutingExecuted, waterbodyOutID1):
+            """
+            Reservoir outflow
 
+            :param inflowC: inflow to reservoirs
+            :param NoRoutingExecuted: actual number of routing substep
+            :return: qResOutM3DtC - reservoir outflow in [m3] per subtime step
+            """
+
+            # ************************************************************
+            # ***** Reservoirs random Forest
+            # ************************************************************
+            import pickle
+            import glob
+
+            if checkOption('calcWaterBalance'):
+                oldres = self.var.reservoirStorageM3C.copy()
+
+            # QResInM3Dt = inflowC
+            # Reservoir inflow in [m3] per timestep
+            self.var.reservoirStorageM3C += inflowC
+            # New reservoir storage [m3] = plus inflow for this sub step
+
+            # check that reservoir storage - evaporation > 0
+            # Evaporation from res type-4 is not applied for inflowC
+            reservoirStorageM3C_type4Res = np.where(self.var.waterBodyTypC == 4, self.var.reservoirStorageM3C - inflowC,
+                                                    self.var.reservoirStorageM3C)
+            self.var.resEvapWaterBodyC = np.where(reservoirStorageM3C_type4Res - self.var.evapWaterBodyC > 0.,
+                                                  self.var.evapWaterBodyC, reservoirStorageM3C_type4Res)
+            self.var.sumResEvapWaterBodyC += self.var.resEvapWaterBodyC
+            self.var.reservoirStorageM3C = self.var.reservoirStorageM3C - self.var.resEvapWaterBodyC
+
+            self.var.reservoirFillC = self.var.reservoirStorageM3C / self.var.resVolumeC
+
+            
+            list_rf_models = glob.glob("E:/CWatM-RF/RF_models_Hydrol_id_doy/*pkl") #change the folder path
+            rf_model_damID = [int(path.split('_')[-1].split('.')[0]) for path in list_rf_models]   #IDs of dams for which RF is avl
+            
+            #self.var.waterBodyID_temp = loadmap('waterBodyID', compress = True).astype(np.int64)
+            
+            reservoirOutflow = np.zeros_like(inflowC)  #making a zero array, will fill it up in the below loop
+            
+            
+
+                
+            #with open(val_file_path, 'a') as val_res_out:
+            for i in range(len(waterbodyOutID1)):
+                temp_waterBodyID = waterbodyOutID1[i]
+                temp_inflow = inflowC[i]/(86400/self.var.noRoutingSteps)    #originally inflowC is in m3
+                temp_res_storage = self.var.reservoirStorageM3C[i]/1000000   #convert to MCM
+                temp_day_of_year = dateVar['currDate'].timetuple().tm_yday
+                if temp_waterBodyID in rf_model_damID:
+                    temp_rf_filename = "E:/CWatM-RF/RF_models_Hydrol_id_doy/RF_damid_hyd_"+str(temp_waterBodyID)+".pkl"  #change the folder path
+                    with open(temp_rf_filename, 'rb') as file:
+                        test_random_forest_model = pickle.load(file)
+
+                    temp_reservoirOutflow = test_random_forest_model.predict([[temp_inflow, temp_res_storage, temp_day_of_year]])[0]  #in m3/s
+                    #temp_reservoirOutflow = test_random_forest_model.predict([[temp_inflow, temp_res_storage, temp_day_of_year]])[0]  #in m3/s
+                    reservoirOutflow[i] = temp_reservoirOutflow
+                    #print("check: ", temp_inflow, temp_res_storage, temp_day_of_year, temp_reservoirOutflow, temp_waterBodyID)
+
+
+                        
+            val_file_path = 'E:/CWatM-RF/output/res_112265_outflow.txt'                                           
+            with open(val_file_path, 'a') as val_res_out:
+                temp_reservoirOutflow = reservoirOutflow[np.where(self.var.waterBodyOutC==112265)]
+                temp_inflow = inflowC[np.where(self.var.waterBodyOutC==112265)]/(86400/self.var.noRoutingSteps)     #originally inflowC is in m3, 
+                temp_storage = self.var.reservoirStorageM3C[np.where(self.var.waterBodyOutC==112265)]/1000000   #convert to MCM
+                temp_day_of_year = dateVar['currDate'].timetuple().tm_yday
+                print("resID 112265:", temp_inflow, temp_storage, temp_day_of_year, temp_reservoirOutflow)
+                val_res_out.write(f'{temp_inflow}, {temp_storage},{temp_day_of_year}, {temp_reservoirOutflow}\n')
+
+
+
+
+
+
+            qResOutM3DtC = reservoirOutflow * self.var.dtRouting
+
+            # Reservoir outflow in [m3] per sub step
+            qResOutM3DtC = np.where(self.var.reservoirStorageM3C - qResOutM3DtC > 0., qResOutM3DtC,
+                                    self.var.reservoirStorageM3C)
+            # check if storage would go < 0 if outflow is used
+            qResOutM3DtC = np.maximum(qResOutM3DtC, self.var.reservoirStorageM3C - self.var.resVolumeC)
+            # Check to prevent reservoir storage from exceeding total capacity
+            qResOutM3DtC = np.where(self.var.waterBodyTypC == 4, inflowC, qResOutM3DtC)
+            # In type-4 res. outflow = inflowC
+
+            self.var.reservoirStorageM3C -= qResOutM3DtC
+
+            self.var.reservoirStorageM3C = np.maximum(0.0, self.var.reservoirStorageM3C)
+
+            # New reservoir storage [m3]
+            self.var.reservoirFillC = self.var.reservoirStorageM3C / self.var.resVolumeC
+            # New reservoir fill
+
+            # if  (self.var.noRoutingSteps == (NoRoutingExecuted + 1)):
+            if self.var.noRoutingSteps == (NoRoutingExecuted + 1):
+                np.put(self.var.reservoirStorage, self.var.decompress_LR, self.var.reservoirStorageM3C)
+
+            if checkOption('calcWaterBalance'):
+                self.model.waterbalance_module.waterBalanceCheck(
+                    [inflowC / self.var.dtRouting],  # In
+                    [qResOutM3DtC / self.var.dtRouting, self.var.resEvapWaterBodyC / self.var.dtRouting],
+                    # Out  self.var.evapWaterBodyC
+                    [oldres / self.var.dtRouting],  # prev storage
+                    [self.var.reservoirStorageM3C / self.var.dtRouting],
+                    "res1", False)
+
+            return qResOutM3DtC
         # ---------------------------------------------------------------------------------------------
         # ---------------------------------------------------------------------------------------------
         # lake and reservoirs
@@ -918,11 +1039,19 @@ class lakes_reservoirs(object):
         # calculate total inflow into lakes and compress it to waterbodie outflow point
         # inflow to lake is discharge from upstream network + runoff directly into lake + outflow from upstream lakes
         inflowC = np.compress(self.var.compress_LR, inflow)
-
+        
+        # np.savetxt("E:/CWatM-RF/output/nouse/inflowC.txt", inflowC)
+        # np.savetxt("E:/CWatM-RF/output/nouse/inflow.txt", inflow)
+        # np.savetxt("E:/CWatM-RF/output/nouse/waterbodyID.txt", self.var.waterBodyID)
+        #np.savetxt("E:/CWatM-RF/output/nouse/waterbodyIDC.txt", self.var.waterBodyID_C)
+        # np.savetxt("E:/CWatM-RF/output/nouse/waterbodyOut.txt", self.var.waterBodyOut)
+        # np.savetxt("E:/CWatM-RF/output/nouse/waterbodyOutC.txt", self.var.waterBodyOutC)
+        
         # ------------------------------------------------------------
         self.var.resEvapWaterBodyC = globals.inZero.copy()
         outflowLakesC = dynamic_inloop_lakes(inflowC, NoRoutingExecuted)
-        outflowResC = dynamic_inloop_reservoirs(inflowC, NoRoutingExecuted)
+        # outflowResC = dynamic_inloop_reservoirs(inflowC, NoRoutingExecuted)
+        outflowResC = dynamic_inloop_reservoirs_rf(inflowC, NoRoutingExecuted, self.var.waterBodyOutC)  #using the _rf function  #output in m3
         outflow0C = inflowC.copy()  # no retention
         outflowC = np.where(self.var.waterBodyTypCTemp == 0, outflow0C,
                             np.where(self.var.waterBodyTypCTemp == 1, outflowLakesC, outflowResC))
@@ -952,28 +1081,12 @@ class lakes_reservoirs(object):
 
         # decompress to normal maskarea size waterbalance
         if self.var.noRoutingSteps == (NoRoutingExecuted + 1):
-            np.put(self.var.EvapWaterBodyMOutlet, self.var.decompress_LR, self.var.sumEvapWaterBodyC)
-            self.var.EvapWaterBodyMOutlet = self.var.EvapWaterBodyMOutlet / self.var.cellArea
+            np.put(self.var.EvapWaterBodyM, self.var.decompress_LR, self.var.sumEvapWaterBodyC)
+            self.var.EvapWaterBodyM = self.var.EvapWaterBodyM / self.var.cellArea
             np.put(self.var.lakeResInflowM, self.var.decompress_LR, self.var.sumlakeResInflow)
             self.var.lakeResInflowM = self.var.lakeResInflowM / self.var.cellArea
             np.put(self.var.lakeResOutflowM, self.var.decompress_LR, self.var.sumlakeResOutflow)
             self.var.lakeResOutflowM = self.var.lakeResOutflowM / self.var.cellArea
-
-            # --------------- correction PB May 2024
-            # calculate evaporation for each cell of the lake
-            # each lake cell fraction of the total lake area
-            # a lake cell has at minimum 5% water
-            fracwatermin = np.where(self.var.waterBodyID > 0, np.maximum(self.var.fracVegCover[5],0.05),0)
-            wlakefracsum = npareatotal(fracwatermin, self.var.waterBodyID)
-            # -> part of each cell of the total lake -> sum for each lake = 1
-            wlakefrac = divideValues(self.var.fracVegCover[5], wlakefracsum)
-            # all lake id cells get the evaporation of the outlet cell
-            ebody = npareatotal(self.var.EvapWaterBodyMOutlet, self.var.waterBodyID)
-            # 3) step evoporation is distributed by the water frac of each lake
-            self.var.EvapWaterBodyM = ebody * wlakefrac
-            self.var.EvapWaterBodyM[np.isnan(self.var.EvapWaterBodyM)] = 0.
-
-
 
             # Output maps for lakeResInflow and lakeResOutflow when using type-4 res.
             # The standard map inflate the overall res. water volumes
@@ -992,7 +1105,10 @@ class lakes_reservoirs(object):
         np.put(self.var.reslakeoutflow, self.var.decompress_LR, outflowC)
         lakeResOutflowDis = npareatotal(self.var.reslakeoutflow, self.var.waterBodyID) / (
                     self.var.DtSec / self.var.noRoutingSteps)
-        # shift outflow 1 cell downstream
+                    
+        #np.savetxt("E:/CWatM-RF/output/nouse/lakeResOutflowDis.txt", lakeResOutflowDis)
+        # np.savetxt("E:/CWatM-RF/output/nouse/lakeResOutflowDis_RF.txt", lakeResOutflowDis)
+       # shift outflow 1 cell downstream
         out1 = upstream1(self.var.downstruct, self.var.reslakeoutflow)
         # everything with is not going to another lake is output to river network
         outLdd = np.where(self.var.waterBodyID > 0, 0, out1)
@@ -1003,10 +1119,6 @@ class lakes_reservoirs(object):
         outLakein = npareatotal(outLake1, self.var.waterBodyID)
         # use only the value of the outflow point
         self.var.outLake = np.where(self.var.waterBodyOut > 0, outLakein, 0.)
-
-        # Puts the value of lakeResStorage into all cells covered by the waterbody
-        self.var.lakeResStorage_filled = npareamaximum(self.var.lakeResStorage, self.var.waterBodyID)
-        self.var.lakeResStorage_buffer = npareamaximum(self.var.lakeResStorage, self.var.waterBodyBuffer)
 
         if checkOption('calcWaterBalance'):
             self.model.waterbalance_module.waterBalanceCheck(
@@ -1027,7 +1139,7 @@ class lakes_reservoirs(object):
         if checkOption('calcWaterBalance'):
             self.model.waterbalance_module.waterBalanceCheck(
                 [self.var.lakeResInflowM],  # In
-                [self.var.lakeResOutflowM, self.var.EvapWaterBodyMOutlet],  # Out  self.var.evapWaterBodyC
+                [self.var.lakeResOutflowM, self.var.EvapWaterBodyM],  # Out  self.var.evapWaterBodyC
                 [self.var.prelakeResStorage / self.var.cellArea],  # prev storage
                 [self.var.lakeResStorage / self.var.cellArea],
                 "lake3", False)
