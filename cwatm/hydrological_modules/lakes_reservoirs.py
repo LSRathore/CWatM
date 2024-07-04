@@ -953,7 +953,7 @@ class lakes_reservoirs(object):
                     #print("check: ", temp_inflow, temp_res_storage, temp_day_of_year, temp_reservoirOutflow, temp_waterBodyID)
 
 
-                        
+            ### validating the outflow for reservoir ID 112265:            
             val_file_path = 'E:/CWatM-RF/output/res_112265_outflow.txt'                                           
             with open(val_file_path, 'a') as val_res_out:
                 temp_reservoirOutflow = reservoirOutflow[np.where(self.var.waterBodyOutC==112265)]
