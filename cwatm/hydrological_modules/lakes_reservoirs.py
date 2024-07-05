@@ -905,6 +905,8 @@ class lakes_reservoirs(object):
             # ************************************************************
             import pickle
             import glob
+            import _pickle as cPickle
+            import joblib
 
             if checkOption('calcWaterBalance'):
                 oldres = self.var.reservoirStorageM3C.copy()
@@ -925,17 +927,84 @@ class lakes_reservoirs(object):
 
             self.var.reservoirFillC = self.var.reservoirStorageM3C / self.var.resVolumeC
 
-            
+            # New reservoir fill [-]
+
+            # MODIFIED DOR FRIDMAN 
+            # limit res. outflows to reservoir with water level > limit_to_resOutflows
+            # limit_to_resOutflows is defined relative to res. Volume
+            if "limit_to_resOutflows" in binding:
+                reservoirOutflowLimit = loadmap('limit_to_resOutflows')
+                # load map of outflow limit np.compress(self.var.compress_LR, self.var.waterBodyOut)
+                reservoirOutflowLimitC = np.compress(self.var.compress_LR,
+                                                     globals.inZero.copy() + reservoirOutflowLimit)
+                # compress to lake&res data
+                reservoirOutflowLimitMask = np.where(reservoirOutflowLimitC < self.var.reservoirFillC, 1, 0)
+                # Create mask for limit out flow: 1 allow out flow (in case fill > limit) 
+            else:
+                reservoirOutflowLimitMask = np.compress(self.var.compress_LR, globals.inZero.copy() + 1)
+
+            reservoirOutflow1 = np.minimum(self.var.minQC, self.var.reservoirStorageM3C * self.var.InvDtSec)
+            # Reservoir outflow [m3/s] if ReservoirFill is nearing absolute minimum. 
+
+            reservoirOutflow2 = self.var.minQC + self.var.deltaO * (
+                        self.var.reservoirFillC - 2 * self.var.conLimitC) / self.var.deltaLN
+            # 2*ConservativeStorageLimit
+            # Reservoir outflow [m3/s] if NormalStorageLimit <= ReservoirFill > 2*ConservativeStorageLimit
+
+            reservoirOutflow3 = self.var.normQC + (
+                        (self.var.reservoirFillC - self.var.norm_floodLimitC) / self.var.deltaNFL) * (
+                                            self.var.nondmgQC - self.var.normQC)
+            # Reservoir outflow [m3/s] if FloodStorageLimit le ReservoirFill gt NormalStorageLimit
+
+            temp = np.minimum(self.var.nondmgQC, np.maximum(inflowC * 1.2, self.var.normQC))
+            reservoirOutflow4 = np.maximum(
+                (self.var.reservoirFillC - self.var.floodLimitC - 0.01) * self.var.resVolumeC * self.var.InvDtSec, temp)
+
+            # Reservoir outflow [m3/s] if ReservoirFill gt FloodStorageLimit
+            # Depending on ReservoirFill the reservoir outflow equals ReservoirOutflow1, ReservoirOutflow2,
+            # ReservoirOutflow3 or ReservoirOutflow4
+
+            reservoirOutflow = reservoirOutflow1.copy()
+
+            reservoirOutflow = np.where(self.var.reservoirFillC > 2 * self.var.conLimitC, reservoirOutflow2,
+                                        reservoirOutflow)
+            reservoirOutflow = np.where(self.var.reservoirFillC > self.var.normLimitC, self.var.normQC,
+                                        reservoirOutflow)
+            reservoirOutflow = np.where(self.var.reservoirFillC > self.var.norm_floodLimitC, reservoirOutflow3,
+                                        reservoirOutflow)
+            reservoirOutflow = np.where(self.var.reservoirFillC > self.var.floodLimitC, reservoirOutflow4,
+                                        reservoirOutflow)
+
+            temp = np.minimum(reservoirOutflow, np.maximum(inflowC, self.var.normQC))
+
+            reservoirOutflow = np.where((reservoirOutflow > 1.2 * inflowC) &
+                                        (reservoirOutflow > self.var.normQC) &
+                                        (self.var.reservoirFillC < self.var.floodLimitC), temp, reservoirOutflow)
+
+            # Reservoir_releases holds variables for different reservoir operations, each with 366 timesteps.
+            # The value of the variable at the reservoir is the maximum fraction of available storage to be
+            # released for the associated operation.
+            # Downstream release is the water released downstream into the river.
+            # This is overridden only in flooding conditions.
+
+            if 'Reservoir_releases' in binding:
+                reservoirOutflow = np.where(self.var.reservoirFillC > self.var.floodLimitC, reservoirOutflow,
+                                            np.where(self.var.lakeResStorage_release_ratioC > 0,
+                                                     self.var.lakeResStorage_release_ratioC * self.var.reservoirStorageM3C * (
+                                                             1 / (60 * 60 * 24)), 0))
+
+            if self.var.reservoir_releases_excel_option:
+                reservoirOutflow = np.where(self.var.reservoirFillC > self.var.floodLimitC, reservoirOutflow,
+                                            np.where(self.var.lakeResStorage_release_ratioC > -1,
+                                            self.var.lakeResStorage_release_ratioC * self.var.reservoirStorageM3C *
+                                            (1 / (60 * 60 * 24)), reservoirOutflow))            
             list_rf_models = glob.glob("E:/CWatM-RF/RF_models_Hydrol_id_doy/*pkl") #change the folder path
             rf_model_damID = [int(path.split('_')[-1].split('.')[0]) for path in list_rf_models]   #IDs of dams for which RF is avl
             
             #self.var.waterBodyID_temp = loadmap('waterBodyID', compress = True).astype(np.int64)
             
-            reservoirOutflow = np.zeros_like(inflowC)  #making a zero array, will fill it up in the below loop
-            
-            
+            #reservoirOutflow = np.zeros_like(inflowC)  #making a zero array, will fill it up in the below loop
 
-                
             #with open(val_file_path, 'a') as val_res_out:
             for i in range(len(waterbodyOutID1)):
                 temp_waterBodyID = waterbodyOutID1[i]
@@ -945,28 +1014,30 @@ class lakes_reservoirs(object):
                 if temp_waterBodyID in rf_model_damID:
                     temp_rf_filename = "E:/CWatM-RF/RF_models_Hydrol_id_doy/RF_damid_hyd_"+str(temp_waterBodyID)+".pkl"  #change the folder path
                     with open(temp_rf_filename, 'rb') as file:
-                        test_random_forest_model = pickle.load(file)
+                        test_random_forest_model = cPickle.load(file)
 
                     temp_reservoirOutflow = test_random_forest_model.predict([[temp_inflow, temp_res_storage, temp_day_of_year]])[0]  #in m3/s
-                    #temp_reservoirOutflow = test_random_forest_model.predict([[temp_inflow, temp_res_storage, temp_day_of_year]])[0]  #in m3/s
                     reservoirOutflow[i] = temp_reservoirOutflow
                     #print("check: ", temp_inflow, temp_res_storage, temp_day_of_year, temp_reservoirOutflow, temp_waterBodyID)
+                    
+                    
+
+        ######
+                        
+            # val_file_path = 'E:/CWatM-RF/output/res_112265_outflow.txt'                                           
+            # with open(val_file_path, 'a') as val_res_out:
+                # temp_reservoirOutflow = reservoirOutflow[np.where(self.var.waterBodyOutC==112265)]
+                # temp_inflow = inflowC[np.where(self.var.waterBodyOutC==112265)]/(86400/self.var.noRoutingSteps)     #originally inflowC is in m3, 
+                # temp_storage = self.var.reservoirStorageM3C[np.where(self.var.waterBodyOutC==112265)]/1000000   #convert to MCM
+                # temp_day_of_year = dateVar['currDate'].timetuple().tm_yday
+                # print("resID 112265:", temp_inflow, temp_storage, temp_day_of_year, temp_reservoirOutflow)
+                # val_res_out.write(f'{temp_inflow}, {temp_storage},{temp_day_of_year}, {temp_reservoirOutflow}\n')
 
 
-            ### validating the outflow for reservoir ID 112265:            
-            val_file_path = 'E:/CWatM-RF/output/res_112265_outflow.txt'                                           
-            with open(val_file_path, 'a') as val_res_out:
-                temp_reservoirOutflow = reservoirOutflow[np.where(self.var.waterBodyOutC==112265)]
-                temp_inflow = inflowC[np.where(self.var.waterBodyOutC==112265)]/(86400/self.var.noRoutingSteps)     #originally inflowC is in m3, 
-                temp_storage = self.var.reservoirStorageM3C[np.where(self.var.waterBodyOutC==112265)]/1000000   #convert to MCM
-                temp_day_of_year = dateVar['currDate'].timetuple().tm_yday
-                print("resID 112265:", temp_inflow, temp_storage, temp_day_of_year, temp_reservoirOutflow)
-                val_res_out.write(f'{temp_inflow}, {temp_storage},{temp_day_of_year}, {temp_reservoirOutflow}\n')
+            reservoirOutflow = reservoirOutflow * reservoirOutflowLimitMask
 
-
-
-
-
+            with open("E:/CWatM-RF/output/outflowResC_insideloop.txt", 'a') as file1:
+                file1.write(f"{reservoirOutflow.tolist()}\n")
 
             qResOutM3DtC = reservoirOutflow * self.var.dtRouting
 
@@ -1055,7 +1126,14 @@ class lakes_reservoirs(object):
         outflow0C = inflowC.copy()  # no retention
         outflowC = np.where(self.var.waterBodyTypCTemp == 0, outflow0C,
                             np.where(self.var.waterBodyTypCTemp == 1, outflowLakesC, outflowResC))
-
+                            
+        # with open("E:/CWatM-RF/output/outflowResC.txt", 'a') as file1:
+            # file1.write(f"{outflowResC.tolist()}\n")
+        # with open("E:/CWatM-RF/output/inflowC.txt", 'a') as file2:
+            # file2.write(f"{inflowC.tolist()}\n")
+        # with open("E:/CWatM-RF/output/outflowC.txt", 'a') as file3:
+            # file3.write(f"{outflowC.tolist()}\n")     
+            
         # outflowC =  outflowLakesC        # only lakes
         # outflowC = outflowResC
         # outflowC = inflowC.copy() - self.var.evapWaterBodyC
